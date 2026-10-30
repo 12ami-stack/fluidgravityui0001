@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8"><title>Gravity Fluid UI - ディレイ起動ランチャー</title>
+    <style>
+        :root { --bg: #030712; --panel: #0b1528; --accent-down: #00d2ff; --accent-up: #00ffaa; }
+        body { margin: 0; background: var(--bg); color: #fff; font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; overflow: hidden; }
+        .title-zone { text-align: center; margin-bottom: 20px; }
+        h1 { margin: 0; font-size: 1.6rem; letter-spacing: 4px; font-weight: 300; background: linear-gradient(90deg, var(--accent-down), var(--accent-up)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .hint { font-size: 0.85rem; color: #64748b; margin-top: 5px; }
+        #ui-wrapper { position: relative; width: 360px; height: 560px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5), 0 0 40px rgba(0,210,255,0.1); border-radius: 24px; overflow: hidden; border: 2px solid #1e293b; background: var(--panel); }
+        canvas { display: block; }
+        button { background: transparent; border: 1px solid var(--accent-down); color: var(--accent-down); padding: 12px 30px; font-size: 0.9rem; cursor: pointer; border-radius: 30px; letter-spacing: 1px; transition: all 0.9s cubic-bezier(.22,.61,.36,1); }
+        button:hover { background: var(--accent-down); color: var(--bg); }
+        .float { animation: float 4.5s ease-in-out infinite; }
+        @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+        .key-hint { display: block; margin-top: 10px; text-align: center; font-size: 0.75rem; color: #64748b; letter-spacing: 2px; }
+
+        /* アプリ画面（企画中デザイン） */
+        #notification { display: none; position: absolute; top:0; left:0; width:100%; height:100%; flex-direction: column; align-items: center; justify-content: center; z-index: 10; animation: fadeIn 1.2s ease forwards;
+            background-color: rgba(5,12,26,0.97); background-image: linear-gradient(rgba(0,210,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(0,210,255,0.06) 1px, transparent 1px); background-size: 24px 24px; }
+        #notification::before { content: ""; position: absolute; inset: 14px; border: 1.5px dashed rgba(0,210,255,0.35); border-radius: 14px; pointer-events: none; }
+        .plan-badge { font-size: 0.7rem; letter-spacing: 4px; color: var(--accent-down); border: 1px solid var(--accent-down); border-radius: 4px; padding: 3px 10px; margin-bottom: 18px; }
+        #notification h2 { font-size: 2.2rem; font-weight: 300; color: var(--accent-down); letter-spacing: 8px; margin: 0 0 6px 0; }
+        .plan-sub { font-size: 0.7rem; letter-spacing: 3px; color: #64748b; margin-bottom: 22px; }
+        .plan-steps { display: flex; align-items: center; gap: 8px; margin-bottom: 26px; font-size: 0.65rem; color: #475569; }
+        .plan-steps span { padding: 3px 8px; border: 1px dashed #334155; border-radius: 10px; }
+        .plan-steps span.now { border: 1px solid var(--accent-down); color: var(--accent-down); }
+        .plan-steps i { width: 10px; border-top: 1px dashed #334155; }
+        #notification p { color: #94a3b8; font-size: 0.85rem; line-height: 1.7; text-align: center; margin: 0 0 26px 0; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+</head>
+<body>
+
+    <div class="title-zone">
+        <h1>Fluid Gravity UI</h1>
+        <div class="hint">ホーム：【→】キーでアイコンを流す（止めれば電車のように止まる）。素早く2連打してアイコンを遅れさせ、中央の穴から起動エリアへ落とすと起動</div>
+    </div>
+
+    <div id="ui-wrapper">
+        <canvas id="uiCanvas"></canvas>
+        <div id="notification">
+            <div class="plan-badge" id="app-badge">TEST APP</div>
+            <h2>企画中</h2>
+            <div class="plan-sub">UNDER PLANNING</div>
+            <div class="plan-steps"><span class="now">企画</span><i></i><span>設計</span><i></i><span>開発</span><i></i><span>公開</span></div>
+            <p id="app-desc">ダミーアプリです。</p>
+            <div class="float">
+                <button onclick="closeApp()">ホームへ戻る</button>
+                <span class="key-hint">← →</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('uiCanvas'), ctx = canvas.getContext('2d'), notif = document.getElementById('notification');
+        const W = 360, H = 560;
+        canvas.width = W; canvas.height = H;
+
+        // ---- 定数
+        const N = 12;                 // アプリ数
+        const S = 84;                 // アイコン間隔
+        const ICON = 56, CX = W / 2;
+        const ICON_Y = 118, RAIL_Y = 156, LAUNCH_Y = 410;
+        const RING = N * S, WRAP_MAX = W + 3 * S, WRAP_MIN = WRAP_MAX - RING;   // 画面外でぐるっと回す
+        const DF = 5;                 // 前のアイコンへの追随ディレイ（フレーム/隣）
+        const SMOOTH = 0.12;          // 先頭の動きの柔らかさ（止まるときもふわっと）
+        const HOLD_V = 5;             // 長押し中の流れる速さ（一定）
+        const FALL_LAG = 0.2 * S;     // 手を離した瞬間、これ以上遅れているアイコンが落ちる
+        const TILT_FULL = 0.4 * S;    // この遅れで最大の傾き
+        const HOLE_W = S * 0.7;       // レール中央の穴（起動エリアの真上）
+        const XREF_R = W + S, XREF_L = -S, DMAX = DF * (XREF_R - XREF_L) / S;
+        const hueOf = (i) => (i * 47) % 360;
+
+        // ---- 状態
+        let state = "home";           // home, falling, opening, app, closing
+        const x = [], x0 = [], dm = [], tilt = new Array(N).fill(0), alpha = new Array(N).fill(1), away = new Array(N).fill(false);
+        const Vh = new Array(64).fill(0);   // 先頭の動きの履歴
+        let pressTarget = 0, Vp = 0, field = 1;   // field: +1 右へ流れる / -1 左へ流れる
+        let fall = null, appIdx = 0, openP = 0, readyAt = 0, t0 = performance.now();
+        const held = [];              // 押している矢印キー（後から押したものが優先）
+
+        // 画面上の位置に応じた遅れ：進行方向の前ほど早く、後ろほど遅く動く
+        function delayAt(px, f) {
+            const d = f > 0 ? DF * (XREF_R - px) / S : DF * (px - XREF_L) / S;
+            return Math.max(0, Math.min(DMAX, d));
+        }
+        function sampleV(d) {
+            const L = Vh.length - 1, f = Math.max(0, L - d), i = Math.floor(f), fr = f - i;
+            return Vh[i] * (1 - fr) + Vh[Math.min(i + 1, L)] * fr;
+        }
+        const predOf = (m) => field > 0 ? (m + 1) % N : (m - 1 + N) % N;
+        const lagOf = (m) => { const p = predOf(m); return field > 0 ? x[p] - x[m] - S : x[m] - x[p] - S; };
+        const gapOk = (m) => { const p = predOf(m), g = field > 0 ? x[p] - x[m] : x[m] - x[p]; return g > 0 && g < 3 * S; };
+
+        for (let m = 0; m < N; m++) {
+            let px = CX + (m - 3) * S;
+            while (px >= WRAP_MAX) px -= RING;
+            x[m] = px; x0[m] = px; dm[m] = delayAt(px, 1);
+        }
+
+        // ---- 入力：左右キーの長押しで流す。離すと遅れたアイコンが起動エリアへ落ちる
+        const isArrow = (k) => k === 'ArrowLeft' || k === 'ArrowRight';
+        window.addEventListener('keydown', (e) => {
+            if (!isArrow(e.key)) return;
+            e.preventDefault();
+            if (e.repeat) return;
+            if (state === "home") { const i = held.indexOf(e.key); if (i >= 0) held.splice(i, 1); held.push(e.key); }
+            else if (state === "app" && performance.now() >= readyAt) closeApp();
+        });
+        window.addEventListener('keyup', (e) => {
+            if (!isArrow(e.key)) return;
+            const i = held.indexOf(e.key);
+            if (i < 0) return;
+            held.splice(i, 1);
+            if (state === "home" && held.length === 0) releaseLaunch();
+        });
+        window.addEventListener('blur', () => { held.length = 0; });
+
+        // 手を離した瞬間：中央の穴の上で追随が遅れているアイコンが落ちる
+        function releaseLaunch() {
+            let best = -1, bestD = 1e9;
+            for (let m = 0; m < N; m++) {
+                if (away[m] || alpha[m] < 0.6 || !gapOk(m)) continue;
+                const d = Math.abs(x[m] - CX);
+                if (d < HOLE_W && lagOf(m) > FALL_LAG && d < bestD) { best = m; bestD = d; }
+            }
+            if (best < 0) return;
+            state = "falling"; away[best] = true;
+            fall = { m: best, x: x[best], y: ICON_Y, vy: 0, ang: -field * tilt[best], vang: -field * 0.03 };
+        }
+
+        // ---- アプリの開閉
+        function showApp() {
+            state = "app";
+            document.getElementById('app-badge').textContent = 'TEST APP #' + (appIdx + 1);
+            document.getElementById('app-desc').innerHTML = 'テスト' + (appIdx + 1) + '（ダミー）<br>この先は現在企画中です。';
+            notif.style.display = 'flex';
+            readyAt = performance.now() + 1500;
+        }
+        function closeApp() {
+            if (state !== "app") return;
+            notif.style.display = 'none';
+            held.length = 0;
+            state = "closing";
+        }
+
+        // ---- 更新
+        function update() {
+            // 長押し中は一定の速さで流れる。離せば電車のようにふわっと止まる
+            if (state === "home" && held.length) {
+                field = held[held.length - 1] === 'ArrowRight' ? 1 : -1;
+                pressTarget += field * HOLD_V;
+            }
+            Vp += (pressTarget - Vp) * SMOOTH;
+            Vh.push(Vp); Vh.shift();
+
+            // 各アイコンは「自分の位置に応じたディレイ」で先頭の動きに追随（電車）
+            for (let m = 0; m < N; m++) {
+                const tgt = delayAt(x[m], field);
+                dm[m] += Math.max(-1.2, Math.min(1.2, tgt - dm[m]));
+                x[m] = x0[m] + sampleV(dm[m]);
+                if (x[m] >= WRAP_MAX) { x[m] -= RING; x0[m] -= RING; }
+                else if (x[m] < WRAP_MIN) { x[m] += RING; x0[m] += RING; }
+            }
+
+            // 追随の遅れ → 傾き
+            for (let m = 0; m < N; m++) {
+                let target = 0;
+                if (!away[m] && gapOk(m)) target = Math.max(0, Math.min(1, lagOf(m) / TILT_FULL)) * 0.5;
+                tilt[m] += (target - tilt[m]) * 0.3;
+                alpha[m] += ((away[m] ? 0 : 1) - alpha[m]) * 0.08;
+            }
+
+            // 落下 → 起動エリアに着地 → アプリが広がる
+            if (state === "falling") {
+                fall.vy += 0.55; fall.y += fall.vy;
+                fall.x += (CX - fall.x) * 0.08;
+                fall.vang *= 1.03; fall.ang += fall.vang;
+                if (fall.y >= LAUNCH_Y) { fall.y = LAUNCH_Y; appIdx = fall.m; openP = 0; state = "opening"; }
+            } else if (state === "opening") {
+                openP += (1.05 - openP) * 0.07;
+                if (openP >= 1) showApp();
+            } else if (state === "closing") {
+                openP += (-0.05 - openP) * 0.07;
+                if (openP <= 0) { openP = 0; state = "home"; away[appIdx] = false; alpha[appIdx] = 0; fall = null; }
+            }
+        }
+
+        // ---- 描画
+        function rr(a, b, w, h, r) {
+            ctx.beginPath();
+            ctx.moveTo(a + r, b); ctx.arcTo(a + w, b, a + w, b + h, r); ctx.arcTo(a + w, b + h, a, b + h, r);
+            ctx.arcTo(a, b + h, a, b, r); ctx.arcTo(a, b, a + w, b, r); ctx.closePath();
+        }
+
+        function drawIcon(m, cx, cy, ang, pvx, pvy, a, sc) {
+            ctx.save();
+            ctx.globalAlpha = a;
+            ctx.translate(pvx, pvy); ctx.rotate(ang); ctx.translate(-pvx, -pvy);
+            const size = ICON * sc, h = hueOf(m), L = cx - size / 2, T = cy - size / 2;
+            const g = ctx.createLinearGradient(L, T, L, T + size);
+            g.addColorStop(0, `hsl(${h},65%,62%)`); g.addColorStop(1, `hsl(${h},60%,42%)`);
+            ctx.fillStyle = g; rr(L, T, size, size, 14 * sc); ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.font = `bold ${Math.round(20 * sc)}px sans-serif`;
+            ctx.textAlign = 'center'; ctx.fillText(String(m + 1), cx, cy + 7 * sc);
+            ctx.fillStyle = '#94a3b8'; ctx.font = '10px sans-serif';
+            ctx.fillText('テスト' + (m + 1), cx, cy + size / 2 + 14);
+            ctx.restore();
+        }
+
+        function draw() {
+            const t = performance.now() - t0;
+            ctx.clearRect(0, 0, W, H);
+            ctx.fillStyle = '#050c1a'; ctx.fillRect(0, 0, W, H);
+
+            // ステータスバー
+            ctx.textAlign = 'left'; ctx.fillStyle = '#cbd5e1'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('9:41', 18, 26);
+            ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 1; rr(318, 17, 22, 10, 3); ctx.stroke();
+            ctx.fillStyle = '#cbd5e1'; rr(320, 19, 14, 6, 2); ctx.fill();
+
+            // 穴から起動エリアへの落下ガイド
+            ctx.strokeStyle = 'rgba(0,210,255,0.12)'; ctx.lineWidth = 1; ctx.setLineDash([4, 6]);
+            ctx.beginPath(); ctx.moveTo(CX - HOLE_W, RAIL_Y); ctx.lineTo(CX - 60, LAUNCH_Y - 40);
+            ctx.moveTo(CX + HOLE_W, RAIL_Y); ctx.lineTo(CX + 60, LAUNCH_Y - 40); ctx.stroke();
+            ctx.setLineDash([]); ctx.textAlign = 'center'; ctx.font = '12px sans-serif';
+            for (let i = 0; i < 3; i++) {
+                const a = 0.15 + 0.35 * (0.5 + 0.5 * Math.sin(t / 500 - i * 0.9));
+                ctx.fillStyle = `rgba(0,210,255,${a})`; ctx.fillText('▼', CX, RAIL_Y + 50 + i * 28);
+            }
+
+            // 起動エリア
+            ctx.strokeStyle = 'rgba(0,255,170,0.55)'; ctx.lineWidth = 1.5;
+            ctx.setLineDash([6, 6]); ctx.lineDashOffset = -t / 80;
+            ctx.beginPath(); ctx.arc(CX, LAUNCH_Y, 56, 0, Math.PI * 2); ctx.stroke();
+            ctx.setLineDash([]); ctx.lineDashOffset = 0;
+            ctx.fillStyle = 'rgba(0,255,170,0.06)'; ctx.beginPath(); ctx.arc(CX, LAUNCH_Y, 56, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#6ee7b7'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('起動エリア', CX, LAUNCH_Y + 4);
+            ctx.fillStyle = '#475569'; ctx.font = '9px sans-serif'; ctx.fillText('LAUNCH', CX, LAUNCH_Y + 18);
+
+            // レール（中央に穴）
+            ctx.strokeStyle = '#334155'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.moveTo(0, RAIL_Y); ctx.lineTo(CX - HOLE_W, RAIL_Y);
+            ctx.moveTo(CX + HOLE_W, RAIL_Y); ctx.lineTo(W, RAIL_Y); ctx.stroke();
+            ctx.lineCap = 'butt';
+
+            // 連結線（追随の遅れ＝張力を色で表示）
+            for (let m = 0; m < N; m++) {
+                const p = predOf(m);
+                if (away[m] || away[p] || !gapOk(m)) continue;
+                const a = field > 0 ? x[m] + ICON / 2 : x[m] - ICON / 2, b = field > 0 ? x[p] - ICON / 2 : x[p] + ICON / 2;
+                if (Math.max(a, b) < -S || Math.min(a, b) > W + S) continue;
+                const lag = Math.max(0, Math.min(1, lagOf(m) / TILT_FULL));
+                ctx.strokeStyle = lag < 0.5 ? 'rgba(71,85,105,0.9)' : (lag < 0.9 ? '#fbbf24' : '#ef4444');
+                ctx.lineWidth = 2 + lag * 2;
+                ctx.beginPath(); ctx.moveTo(a, ICON_Y); ctx.lineTo(b, ICON_Y); ctx.stroke();
+            }
+
+            // アイコン（進行方向側の連結部を支点に、遅れると後ろが垂れて傾く）
+            for (let m = 0; m < N; m++) {
+                if (away[m] || alpha[m] < 0.02 || x[m] < -S || x[m] > W + S) continue;
+                drawIcon(m, x[m], ICON_Y, -field * tilt[m], x[m] + field * ICON / 2, ICON_Y - ICON / 2, alpha[m], 1);
+            }
+
+            // 落下中・着地中のアイコン
+            if (fall && (state === "falling" || state === "opening")) {
+                const sc = state === "opening" ? Math.max(0, 1 - openP * 1.5) : 1;
+                if (sc > 0) drawIcon(fall.m, fall.x, fall.y, fall.ang, fall.x, fall.y, 1, sc);
+            }
+
+            // アプリが起動エリアから広がる
+            if (openP > 0) {
+                ctx.fillStyle = `hsl(${hueOf(appIdx)},55%,45%)`;
+                ctx.beginPath(); ctx.arc(CX, LAUNCH_Y, Math.min(openP, 1) * 600, 0, Math.PI * 2); ctx.fill();
+            }
+
+            // ヒント
+            if (state === "home" || state === "falling") {
+                ctx.textAlign = 'center'; ctx.fillStyle = '#475569'; ctx.font = '10px sans-serif';
+                ctx.fillText('← → 長押しで流す ／ 離すと遅れたアイコンが落ちて起動', CX, H - 26);
+                ctx.fillText('穴の真上で離す。止めれば電車のように止まる', CX, H - 12);
+            }
+        }
+
+        function loop() { update(); draw(); requestAnimationFrame(loop); }
+        loop();
+    </script>
+</body>
+</html>
