@@ -12,6 +12,8 @@
         canvas { display: block; }
         button { background: transparent; border: 1px solid var(--accent-down); color: var(--accent-down); padding: 12px 30px; font-size: 0.9rem; cursor: pointer; border-radius: 30px; letter-spacing: 1px; transition: all 0.9s cubic-bezier(.22,.61,.36,1); }
         button:hover { background: var(--accent-down); color: var(--bg); }
+        #launch-lock { position: fixed; top: 12px; right: 12px; z-index: 100; padding: 6px 12px; font-size: 0.7rem; letter-spacing: 0.5px; border-radius: 16px; }
+        #launch-lock.on { background: var(--accent-down); color: var(--bg); }
         .float { animation: float 4.5s ease-in-out infinite; }
         @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
         .key-hint { display: block; margin-top: 10px; text-align: center; font-size: 0.75rem; color: #64748b; letter-spacing: 2px; }
@@ -33,9 +35,11 @@
 </head>
 <body>
 
+    <button id="launch-lock" onclick="toggleLaunchLock(); this.blur();">アプリ起動不可：OFF</button>
+
     <div class="title-zone">
         <h1>Fluid Gravity UI</h1>
-        <div class="hint"></div>
+        <div class="hint">ホーム：【→】キーでアイコンを流す（止めれば電車のように止まる）。素早く2連打してアイコンを遅れさせ、中央の穴から起動エリアへ落とすと起動</div>
     </div>
 
     <div id="ui-wrapper">
@@ -79,6 +83,7 @@
         const Vh = new Array(64).fill(0);   // 先頭の動きの履歴
         let pressTarget = 0, Vp = 0, field = 1;   // field: +1 右へ流れる / -1 左へ流れる
         let fall = null, appIdx = 0, openP = 0, readyAt = 0, t0 = performance.now();
+        let launchLocked = false;     // true の間はアイコンが落ちず、アプリは起動しない
         const held = [];              // 押している矢印キー（後から押したものが優先）
 
         // 画面上の位置に応じた遅れ：進行方向の前ほど早く、後ろほど遅く動く
@@ -119,7 +124,15 @@
         window.addEventListener('blur', () => { held.length = 0; });
 
         // 手を離した瞬間：中央の穴の上で追随が遅れているアイコンが落ちる
+        function toggleLaunchLock() {
+            launchLocked = !launchLocked;
+            const b = document.getElementById('launch-lock');
+            b.classList.toggle('on', launchLocked);
+            b.textContent = 'アプリ起動不可：' + (launchLocked ? 'ON' : 'OFF');
+        }
+
         function releaseLaunch() {
+            if (launchLocked) return;
             let best = -1, bestD = 1e9;
             for (let m = 0; m < N; m++) {
                 if (away[m] || alpha[m] < 0.6 || !gapOk(m)) continue;
